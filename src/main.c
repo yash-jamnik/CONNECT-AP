@@ -24,6 +24,9 @@ static K_SEM_DEFINE(sem_disconnected, 0, 1);
 
 static bool ble_connected = false;
 
+// BELOW
+// static struct bt_conn *default_conn = NULL;
+// static bool connect_in_progress = false;
 /*===============zip fuctions====================*/
 
 #define MAX_PACKET_SIZE 30000
@@ -122,7 +125,7 @@ static size_t rle_decompress(const uint8_t *in, size_t in_size,
 #define SCAN_DURATION_MS 20000
 #define UART_CMD_EXIT "EXIT"
 
-#define IMAGE_CHUNK_SIZE 150
+#define IMAGE_CHUNK_SIZE 200
 
 /* ===================== DEBUG ===================== */
 
@@ -189,21 +192,37 @@ static void write_cb(struct bt_conn *conn, uint8_t err,
 }
 static void stop_scan_and_disconnect(void)
 {
+	int err;
+
 	/* Stop scan if running */
 	if (scan_running)
 	{
-		bt_le_scan_stop();
+		err = bt_le_scan_stop();
+		if (err && err != -EALREADY)
+		{
+			printk("[SCAN] Stop failed: %d\n", err);
+		}
+
 		scan_running = false;
 		scan_requested = false;
 		printk("[SCAN] Stopped after image transfer\n");
 	}
 
 	/* Disconnect BLE */
-	if (default_conn)
+	if (!default_conn || !ble_connected)
 	{
-		printk("[BLE] Disconnecting after image transfer\n");
-		bt_conn_disconnect(default_conn,
-						   BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+		printk("[BLE] No active connection to disconnect\n");
+		k_sem_give(&sem_disconnected);
+		return;
+	}
+
+	printk("[BLE] Disconnecting after image transfer\n");
+	err = bt_conn_disconnect(default_conn,
+					 BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	if (err && err != -ENOTCONN)
+	{
+		printk("[BLE] Disconnect failed: %d\n", err);
+		k_sem_give(&sem_disconnected);
 	}
 }
 
@@ -357,6 +376,8 @@ static int send_image(void)
 	// printk("[IMG] Image sent (%u bytes)\n", received_packet.size);
 	printk("[IMG] Image sent (%u bytes)\n", compressed_size);
 	printk("[+]IMAGE_SENT_SUCCESSFULLY\n"); // <-- Add this line
+	strcpy(target_device_name, DEFAULT_TARGET_NAME);
+	printk("[SCAN] Target reset to default: %s\n", target_device_name);
 	image_sent = true;
 	stop_scan_and_disconnect();
 	k_sem_take(&sem_disconnected, K_SECONDS(5)); // <-- Add this line
@@ -422,7 +443,9 @@ static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_ex
 {
 	if (err)
 	{
-		printk("MTU exchange failed (err %u)\n", err);
+		// printk("MTU exchange failed (err %u)\n", err);
+		printk("[+]MTU_EXCHANGE_FAILED\n");
+		printk("[+]IMAGE_SENT_FAILED\n"); // <-- Add this line to indicate image sent even if MTU exchange fails
 	}
 	else
 	{
@@ -448,7 +471,10 @@ static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (!err)
 	{
-		default_conn = conn;
+		if (!default_conn)
+		{
+			default_conn = bt_conn_ref(conn);
+		}
 		ble_connected = true;
 
 		int mtu_err = bt_gatt_exchange_mtu(conn, &mtu_params);
@@ -472,6 +498,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	}
 	char_found = false;
 	image_sent = false;
+	printk("[BLE] Disconnected, reason=%u\n", reason);
 	k_sem_give(&sem_disconnected); // <-- Add this line
 }
 
