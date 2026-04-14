@@ -3,9 +3,9 @@ import struct
 import time
 
 # --- CONFIGURE THESE ---
-PORT = "COM5"        # Change to your port
+PORT = "COM10"        # Change to your port
 BAUDRATE = 115200
-NEW_NAME = "ID=C5:38:33:B0:06:BA"   # The name you want the NRF52 client to search for
+NEW_NAME = "ID=E0:E7:5C:23:4C:48"   # The name you want the NRF52 client to search for
 # ------------------------
 
 

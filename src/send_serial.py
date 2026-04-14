@@ -1,3 +1,44 @@
+# import serial
+# import time
+# import bitmaps
+# import struct
+
+# IMG_PAGE_UPDATE = 0x0C
+
+# def build_image_section(data, slot):
+#     size = len(data) + 1  # +1 for slot byte
+#     return struct.pack('<I', size) + struct.pack('B', slot) + data
+
+# if __name__ == "__main__":
+#     port = 'COM11'  # Replace with your COM port
+#     baudrate = 115200
+
+#     # Prepare two images and slots
+#     data1 = bytes(bitmaps.FOUR_COLOR_2INCH)
+#     slot1 = 1
+
+#     data2 = bytes(bitmaps.FOUR_COLOR_2INCH)  # Replace with your second image array
+#     slot2 = 2
+
+#     # Build image sections
+#     section1 = build_image_section(data1, slot1)
+#     section2 = build_image_section(data2, slot2)
+
+#     # Header
+#     header = struct.pack('B', IMG_PAGE_UPDATE)
+
+#     # Total size: header + section1 + section2
+#     total_size = len(header) + len(section1) + len(section2)
+#     total_size_bytes = struct.pack('<I', total_size)
+
+#     # Final packet: [total_size][header][section1][section2]
+#     big_packet = total_size_bytes + header + section1 + section2
+
+#     # Send the combined packet over UART
+#     with serial.Serial(port, baudrate, timeout=1) as ser:
+#         ser.write(big_packet)
+#         print(f"Sent IMG_PAGE_UPDATE packet of length {len(big_packet)} bytes")
+
 import serial
 import time
 import bitmaps
@@ -52,11 +93,11 @@ class DataPacket:
         return struct.pack('<I', self.size) + self.data
 
 if __name__ == "__main__":
-    port = 'COM11'  # Replace with your COM port
+    port = 'COM7'  # Replace with your COM port
     baudrate = 115200
 
     # Convert the `apple` array from `bitmaps.py` to bytes
-    data = bytes(bitmaps.EPD26INCH)
+    data = bytes(bitmaps.EPD_26INCH)
 
     # Create the data packet
     packet = DataPacket(data)
