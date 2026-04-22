@@ -93,11 +93,11 @@ class DataPacket:
         return struct.pack('<I', self.size) + self.data
 
 if __name__ == "__main__":
-    port = 'COM7'  # Replace with your COM port
+    port = 'COM5'  # Replace with your COM port
     baudrate = 115200
 
     # Convert the `apple` array from `bitmaps.py` to bytes
-    data = bytes(bitmaps.EPD_26INCH)
+    data = bytes(bitmaps.lazy)
 
     # Create the data packet
     packet = DataPacket(data)
