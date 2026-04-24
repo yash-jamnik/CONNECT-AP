@@ -1,16 +1,95 @@
-littlefs_storage:
-  address: 0x0
-  device: w25q128
-  end_address: 0x400000
-  placement:
-    before:
-    - tfm_storage
-    - end
-  region: external_flash
-  size: 0x400000
+# littlefs_storage:
+#   address: 0x0
+#   device: w25q128
+#   end_address: 0x400000
+#   placement:
+#     before:
+#     - tfm_storage
+#     - end
+#   region: external_flash
+#   size: 0x400000
 
-external_flash:
-  address: 0x400000
-  end_address: 0x1000000
+# external_flash:
+#   address: 0x400000
+#   end_address: 0x1000000
+#   region: external_flash
+#   size: 0xc00000
+
+
+# littlefs_storage:
+#   address: 0x0
+#   device: w25q128
+#   end_address: 0x400000
+#   placement:
+#     before:
+#     - tfm_storage
+#     - end
+#   region: external_flash
+#   size: 0x400000
+
+# external_flash:
+#   address: 0x400000
+#   end_address: 0x1000000
+#   region: external_flash
+#   size: 0xc00000
+
+
+mcuboot:
+  address: 0x00000000
+  end_address: 0x0000D800
+  size: 0x0000D800
+  region: flash_primary
+
+empty_0:
+  address: 0x0000D800
+  end_address: 0x0000E000
+  size: 0x00000800
+  region: flash_primary
+
+mcuboot_primary:
+  address: 0x0000E000
+  end_address: 0x0010E000
+  size: 0x00100000
+  region: flash_primary
+  orig_span: &slot0
+    - mcuboot_pad
+    - app
+  span: *slot0
+
+mcuboot_pad:
+  address: 0x0000E000
+  end_address: 0x0000E800
+  size: 0x00000800
+  region: flash_primary
+
+app:
+  address: 0x0000E800
+  end_address: 0x0010E000
+  size: 0x000FF800
+  region: flash_primary
+
+
+# ----------------------------------------------------------
+# EXTERNAL FLASH
+# ----------------------------------------------------------
+
+mcuboot_secondary:
+  address: 0x00000000
+  end_address: 0x00100000
+  size: 0x00100000
   region: external_flash
-  size: 0xc00000
+
+littlefs_storage:
+  address: 0x00100000
+  end_address: 0x00500000
+  size: 0x00400000
+  region: external_flash
+
+
+# ----------------------------------------------------------
+# REMAINING FREE EXTERNAL FLASH (if 16MB device)
+# ----------------------------------------------------------
+# Start: 0x00500000
+# End  : 0x01000000
+# Free : 11MB
+# ----------------------------------------------------------

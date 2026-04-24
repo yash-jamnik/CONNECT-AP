@@ -92,6 +92,6 @@ int main(void)
 		return 0;
 	}
 
-	printk("Advertising successfully started\n");
+	printk("Advertising successfully started for second firmware\n");
 	return 0;
 }
