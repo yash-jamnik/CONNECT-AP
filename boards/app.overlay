@@ -37,7 +37,7 @@
     pinctrl-0 = <&spi20_default>;
     pinctrl-1 = <&spi20_sleep>;
     pinctrl-names = "default", "sleep";
-    cs-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+    cs-gpios = <&gpio2 0 GPIO_ACTIVE_LOW>;
 
     w25q128: w25q128@0 {
         compatible = "jedec,spi-nor";
@@ -58,7 +58,7 @@
 &uart30
 {
     status = "okay";
-    current-speed = <115200>;
+    current-speed = <230400>;
 };
 
 &uart30_default {
@@ -157,3 +157,5 @@
 &mx25r64 {
     status = "disabled";
 };
+
+

@@ -733,21 +733,28 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
 
     int slot = find_slot_by_id(id);
     int ret;
+    size_t total;
+    int percent;
 
     if (slot < 0) {
         return -ENOENT;
     }
 
+    /* OTS may call with data == NULL to indicate end of read procedure */
     if (!data) {
+        if (objects[slot].progress_pct < 100U) {
+            objects[slot].progress_pct = 100U;
+            printk("100%%\n");
+        }
+        printk("[+]IMAGE SENT SUCCESS\n");
         return 0;
     }
 
-    len = MIN(len, sizeof(chunk));
+    if (offset == 0) {
+        objects[slot].progress_pct = 0;
+    }
 
-    printk("Read callback: %s offset=%ld len=%zu\n",
-           objects[slot].name,
-           (long)offset,
-           len);
+    len = MIN(len, sizeof(chunk));
 
     ret = file_read_chunk(objects[slot].path,
                           offset,
@@ -759,6 +766,28 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
     }
 
     *data = chunk;
+
+    total = objects[slot].size.cur;
+    if (total == 0U) {
+        return ret;
+    }
+
+    percent = (int)(((offset + (size_t)ret) * 100U) / total);
+
+    /* Print only at 20% boundaries and at 100% */
+    if (percent >= (objects[slot].progress_pct + 20) || percent == 100) {
+        int step = (percent >= 100) ? 100 : (percent / 20) * 20;
+
+        if (step > objects[slot].progress_pct) {
+            objects[slot].progress_pct = (uint8_t)step;
+            printk("%d%%\n", step);
+
+            if (step == 100) {
+                printk("[+]IMAGE SENT SUCCESS\n");
+            }
+        }
+    }
+
     return ret;
 }
 
