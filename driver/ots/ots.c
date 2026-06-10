@@ -385,8 +385,6 @@
 // 	return bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 // }
 
-
-
 /*
  * ots.c
  * Updated OTS server:
@@ -413,17 +411,19 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/services/ots.h>
+#include <zephyr/sys/reboot.h>
 
-#define DEVICE_NAME     CONFIG_BT_DEVICE_NAME
+#define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
 
-#define OBJ_POOL_SIZE   CONFIG_BT_OTS_MAX_OBJ_CNT
-#define OBJ_MAX_NAME    CONFIG_BT_OTS_OBJ_MAX_NAME_LEN
+#define OBJ_POOL_SIZE CONFIG_BT_OTS_MAX_OBJ_CNT
+#define OBJ_MAX_NAME CONFIG_BT_OTS_OBJ_MAX_NAME_LEN
 
-#define OTS_CHUNK_SIZE  240
-#define LFS_PATH        "/lfs"
-
+#define OTS_CHUNK_SIZE 240
+#define LFS_PATH "/lfs"
+static bool recreate_in_progress;
 static struct bt_ots *ots_instance;
+static bool reset_on_disconnect;
 
 /* ------------------------------------------------------- */
 /* Advertising data                                        */
@@ -431,21 +431,22 @@ static struct bt_ots *ots_instance;
 
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS,
-        (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+                  (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
     BT_DATA(BT_DATA_NAME_COMPLETE,
-        DEVICE_NAME, DEVICE_NAME_LEN),
+            DEVICE_NAME, DEVICE_NAME_LEN),
 };
 
 static const struct bt_data sd[] = {
     BT_DATA_BYTES(BT_DATA_UUID16_ALL,
-        BT_UUID_16_ENCODE(BT_UUID_OTS_VAL)),
+                  BT_UUID_16_ENCODE(BT_UUID_OTS_VAL)),
 };
 
 /* ------------------------------------------------------- */
 /* Structures                                              */
 /* ------------------------------------------------------- */
 
-struct ots_file_obj {
+struct ots_file_obj
+{
     bool used;
     uint64_t id;
 
@@ -458,7 +459,8 @@ struct ots_file_obj {
     uint8_t progress_pct;
 };
 
-struct preload_obj {
+struct preload_obj
+{
     struct bt_ots_obj_size size;
     char *name;
     uint32_t props;
@@ -476,8 +478,10 @@ static uint32_t obj_cnt;
 
 static int get_free_slot(void)
 {
-    for (int i = 0; i < OBJ_POOL_SIZE; i++) {
-        if (!objects[i].used) {
+    for (int i = 0; i < OBJ_POOL_SIZE; i++)
+    {
+        if (!objects[i].used)
+        {
             return i;
         }
     }
@@ -486,8 +490,10 @@ static int get_free_slot(void)
 
 static int find_slot_by_id(uint64_t id)
 {
-    for (int i = 0; i < OBJ_POOL_SIZE; i++) {
-        if (objects[i].used && objects[i].id == id) {
+    for (int i = 0; i < OBJ_POOL_SIZE; i++)
+    {
+        if (objects[i].used && objects[i].id == id)
+        {
             return i;
         }
     }
@@ -499,7 +505,8 @@ static int get_file_size(const char *path, size_t *size)
     struct fs_dirent entry;
     int ret = fs_stat(path, &entry);
 
-    if (ret < 0) {
+    if (ret < 0)
+    {
         return ret;
     }
 
@@ -518,12 +525,14 @@ static int file_read_chunk(const char *path,
     fs_file_t_init(&file);
 
     ret = fs_open(&file, path, FS_O_READ);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         return ret;
     }
 
     ret = fs_seek(&file, offset, FS_SEEK_SET);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         fs_close(&file);
         return ret;
     }
@@ -545,12 +554,14 @@ static int file_write_chunk(const char *path,
     fs_file_t_init(&file);
 
     ret = fs_open(&file, path, FS_O_CREATE | FS_O_RDWR);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         return ret;
     }
 
     ret = fs_seek(&file, offset, FS_SEEK_SET);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         fs_close(&file);
         return ret;
     }
@@ -577,9 +588,12 @@ static void restart_adv_handler(struct k_work *work)
                               ad, ARRAY_SIZE(ad),
                               sd, ARRAY_SIZE(sd));
 
-    if (err) {
+    if (err)
+    {
         printk("Advertising restart failed: %d\n", err);
-    } else {
+    }
+    else
+    {
         printk("Advertising restarted\n");
     }
 }
@@ -592,7 +606,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
 {
     ARG_UNUSED(conn);
 
-    if (err) {
+    if (err)
+    {
         printk("Connection failed %u %s\n",
                err, bt_hci_err_to_str(err));
         return;
@@ -607,6 +622,12 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
     printk("Disconnected: %u %s\n",
            reason, bt_hci_err_to_str(reason));
+    if (reset_on_disconnect) {
+        reset_on_disconnect = false;
+        k_sleep(K_MSEC(100));
+        printk("Resetting device due to disconnect after transfer...\n");
+        sys_reboot(SYS_REBOOT_COLD);
+    }
 
     k_sleep(K_MSEC(300));
 
@@ -634,16 +655,18 @@ static int ots_obj_created(struct bt_ots *ots,
 
     int slot = get_free_slot();
 
-    if (slot < 0) {
+    if (slot < 0)
+    {
         return -ENOMEM;
     }
 
     memset(&objects[slot], 0, sizeof(objects[slot]));
 
     objects[slot].used = true;
-    objects[slot].id   = id;
+    objects[slot].id = id;
 
-    if (object_being_created) {
+    if (object_being_created)
+    {
 
         strcpy(objects[slot].name,
                object_being_created->name);
@@ -651,10 +674,11 @@ static int ots_obj_created(struct bt_ots *ots,
         strcpy(objects[slot].path,
                object_being_created->path);
 
-        objects[slot].size  = object_being_created->size;
+        objects[slot].size = object_being_created->size;
         objects[slot].props = object_being_created->props;
-
-    } else {
+    }
+    else
+    {
 
         snprintf(objects[slot].name,
                  sizeof(objects[slot].name),
@@ -664,7 +688,7 @@ static int ots_obj_created(struct bt_ots *ots,
                  sizeof(objects[slot].path),
                  LFS_PATH "/object_%d.bin", slot);
 
-        objects[slot].size.cur   = 0;
+        objects[slot].size.cur = 0;
         objects[slot].size.alloc = 0xffffffff;
 
         BT_OTS_OBJ_SET_PROP_READ(objects[slot].props);
@@ -673,8 +697,8 @@ static int ots_obj_created(struct bt_ots *ots,
         BT_OTS_OBJ_SET_PROP_DELETE(objects[slot].props);
     }
 
-    created_desc->name  = objects[slot].name;
-    created_desc->size  = objects[slot].size;
+    created_desc->name = objects[slot].name;
+    created_desc->size = objects[slot].size;
     created_desc->props = objects[slot].props;
 
     obj_cnt++;
@@ -693,14 +717,18 @@ static int ots_obj_deleted(struct bt_ots *ots,
 
     int slot = find_slot_by_id(id);
 
-    if (slot < 0) {
+    if (slot < 0)
+    {
         return -ENOENT;
     }
-
-    fs_unlink(objects[slot].path);
+    if (!recreate_in_progress)
+    {
+        fs_unlink(objects[slot].path);
+    }
     memset(&objects[slot], 0, sizeof(objects[slot]));
 
-    if (obj_cnt) {
+    if (obj_cnt)
+    {
         obj_cnt--;
     }
 
@@ -726,6 +754,7 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
                             size_t len,
                             off_t offset)
 {
+
     ARG_UNUSED(ots);
     ARG_UNUSED(conn);
 
@@ -736,21 +765,26 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
     size_t total;
     int percent;
 
-    if (slot < 0) {
+    if (slot < 0)
+    {
         return -ENOENT;
     }
-
+    printk("READ size.cur=%u\n", objects[slot].size.cur);
     /* OTS may call with data == NULL to indicate end of read procedure */
-    if (!data) {
-        if (objects[slot].progress_pct < 100U) {
+    if (!data)
+    {
+        if (objects[slot].progress_pct < 100U)
+        {
             objects[slot].progress_pct = 100U;
             printk("100%%\n");
         }
         printk("[+]IMAGE SENT SUCCESS\n");
+        reset_on_disconnect = true;
         return 0;
     }
 
-    if (offset == 0) {
+    if (offset == 0)
+    {
         objects[slot].progress_pct = 0;
     }
 
@@ -761,28 +795,33 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
                           chunk,
                           len);
 
-    if (ret < 0) {
+    if (ret < 0)
+    {
         return ret;
     }
 
     *data = chunk;
 
     total = objects[slot].size.cur;
-    if (total == 0U) {
+    if (total == 0U)
+    {
         return ret;
     }
 
     percent = (int)(((offset + (size_t)ret) * 100U) / total);
 
     /* Print only at 20% boundaries and at 100% */
-    if (percent >= (objects[slot].progress_pct + 20) || percent == 100) {
+    if (percent >= (objects[slot].progress_pct + 20) || percent == 100)
+    {
         int step = (percent >= 100) ? 100 : (percent / 20) * 20;
 
-        if (step > objects[slot].progress_pct) {
+        if (step > objects[slot].progress_pct)
+        {
             objects[slot].progress_pct = (uint8_t)step;
             printk("%d%%\n", step);
 
-            if (step == 100) {
+            if (step == 100)
+            {
                 printk("[+]IMAGE SENT SUCCESS\n");
             }
         }
@@ -807,20 +846,25 @@ static ssize_t ots_obj_write(struct bt_ots *ots,
     size_t total;
     int percent;
 
-    if (slot < 0) {
+    if (slot < 0)
+    {
         return -ENOENT;
     }
 
-    if (offset == 0) {
+    if (offset == 0)
+    {
         objects[slot].progress_pct = 0;
         printk("Upload started: %s\n", objects[slot].name);
     }
 
     total = offset + len + rem;
 
-    if (total == 0) {
+    if (total == 0)
+    {
         percent = 0;
-    } else {
+    }
+    else
+    {
         percent = (int)(((offset + len) * 100U) / total);
     }
 
@@ -829,16 +873,19 @@ static ssize_t ots_obj_write(struct bt_ots *ots,
                            data,
                            len);
 
-    if (ret < 0) {
+    if (ret < 0)
+    {
         return ret;
     }
 
-    if ((offset + len) > objects[slot].size.cur) {
+    if ((offset + len) > objects[slot].size.cur)
+    {
         objects[slot].size.cur = offset + len;
     }
 
     if (percent >= (objects[slot].progress_pct + 10) ||
-        percent == 100) {
+        percent == 100)
+    {
 
         objects[slot].progress_pct = percent;
 
@@ -847,7 +894,8 @@ static ssize_t ots_obj_write(struct bt_ots *ots,
                percent);
     }
 
-    if (rem == 0) {
+    if (rem == 0)
+    {
         printk("Image %s sent successfully\n",
                objects[slot].name);
     }
@@ -867,7 +915,8 @@ static void ots_obj_name_written(struct bt_ots *ots,
 
     int slot = find_slot_by_id(id);
 
-    if (slot >= 0) {
+    if (slot >= 0)
+    {
         strncpy(objects[slot].name,
                 new_name,
                 OBJ_MAX_NAME);
@@ -889,7 +938,8 @@ static int ots_obj_cal_checksum(struct bt_ots *ots,
     int slot = find_slot_by_id(id);
     int ret;
 
-    if (slot < 0) {
+    if (slot < 0)
+    {
         return -ENOENT;
     }
 
@@ -900,7 +950,8 @@ static int ots_obj_cal_checksum(struct bt_ots *ots,
                           chunk,
                           len);
 
-    if (ret < 0) {
+    if (ret < 0)
+    {
         return ret;
     }
 
@@ -909,11 +960,11 @@ static int ots_obj_cal_checksum(struct bt_ots *ots,
 }
 
 static struct bt_ots_cb ots_callbacks = {
-    .obj_created      = ots_obj_created,
-    .obj_deleted      = ots_obj_deleted,
-    .obj_selected     = ots_obj_selected,
-    .obj_read         = ots_obj_read,
-    .obj_write        = ots_obj_write,
+    .obj_created = ots_obj_created,
+    .obj_deleted = ots_obj_deleted,
+    .obj_selected = ots_obj_selected,
+    .obj_read = ots_obj_read,
+    .obj_write = ots_obj_write,
     .obj_name_written = ots_obj_name_written,
     .obj_cal_checksum = ots_obj_cal_checksum,
 };
@@ -933,7 +984,8 @@ int ots_server_init(void)
 
     ots = bt_ots_free_instance_get();
 
-    if (!ots) {
+    if (!ots)
+    {
         return -ENOMEM;
     }
 
@@ -952,11 +1004,13 @@ int ots_server_init(void)
     init.cb = &ots_callbacks;
 
     err = bt_ots_init(ots, &init);
-    if (err) {
+    if (err)
+    {
         return err;
     }
 
-    if (get_file_size(LFS_PATH "/slot0_image.bin", &sz) == 0) {
+    if (get_file_size(LFS_PATH "/slot0_image.bin", &sz) == 0)
+    {
 
         static struct preload_obj preload0;
 
@@ -966,7 +1020,7 @@ int ots_server_init(void)
         strcpy(preload0.path,
                LFS_PATH "/slot0_image.bin");
 
-        preload0.size.cur   = sz;
+        preload0.size.cur = sz;
         preload0.size.alloc = sz;
 
         BT_OTS_OBJ_SET_PROP_READ(preload0.props);
@@ -986,7 +1040,8 @@ int ots_server_init(void)
         object_being_created = NULL;
     }
 
-    if (get_file_size(LFS_PATH "/slot1_image.bin", &sz) == 0) {
+    if (get_file_size(LFS_PATH "/slot1_image.bin", &sz) == 0)
+    {
 
         static struct preload_obj preload1;
 
@@ -996,8 +1051,10 @@ int ots_server_init(void)
         strcpy(preload1.path,
                LFS_PATH "/slot1_image.bin");
 
-        preload1.size.cur   = sz;
+        preload1.size.cur = sz;
         preload1.size.alloc = sz;
+        printk("OTS metadata size = %u\n",
+               (uint32_t)preload1.size.cur);
 
         BT_OTS_OBJ_SET_PROP_READ(preload1.props);
         BT_OTS_OBJ_SET_PROP_WRITE(preload1.props);
@@ -1031,4 +1088,3 @@ int ots_server_start(void)
                            ad, ARRAY_SIZE(ad),
                            sd, ARRAY_SIZE(sd));
 }
-
