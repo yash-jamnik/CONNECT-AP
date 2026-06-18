@@ -4,7 +4,7 @@
         zephyr,uart_console = &uart30;
         zephyr,console=&uart30;
         zephyr,shell-uart=&uart30;
-        zephyr,uart-mcumgr=&uart21;
+        zephyr,uart-mcumgr=&uart30;
         nordic,pm-ext-flash = &w25q128;
     };
 };
