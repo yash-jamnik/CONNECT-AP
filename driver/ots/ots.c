@@ -625,8 +625,8 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     if (reset_on_disconnect) {
         reset_on_disconnect = false;
         k_sleep(K_MSEC(100));
-        printk("Resetting device due to disconnect after transfer...\n");
-        sys_reboot(SYS_REBOOT_COLD);
+        // printk("Resetting device due to disconnect after transfer...\n");
+        // sys_reboot(SYS_REBOOT_COLD);
     }
 
     k_sleep(K_MSEC(300));
@@ -769,7 +769,7 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
     {
         return -ENOENT;
     }
-    printk("READ size.cur=%u\n", objects[slot].size.cur);
+    // printk("READ size.cur=%u\n", objects[slot].size.cur);
     /* OTS may call with data == NULL to indicate end of read procedure */
     if (!data)
     {
@@ -819,11 +819,6 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
         {
             objects[slot].progress_pct = (uint8_t)step;
             printk("%d%%\n", step);
-
-            if (step == 100)
-            {
-                printk("[+]IMAGE SENT SUCCESS\n");
-            }
         }
     }
 
@@ -883,16 +878,20 @@ static ssize_t ots_obj_write(struct bt_ots *ots,
         objects[slot].size.cur = offset + len;
     }
 
-    if (percent >= (objects[slot].progress_pct + 10) ||
-        percent == 100)
+    /* Print only at 20% boundaries and at 100% */
+    if (percent >= (objects[slot].progress_pct + 20) || percent == 100)
     {
+        int step = (percent >= 100) ? 100 : (percent / 20) * 20;
 
-        objects[slot].progress_pct = percent;
-
-        printk("%s upload %d%%\n",
-               objects[slot].name,
-               percent);
+        if (step > objects[slot].progress_pct)
+        {
+            objects[slot].progress_pct = (uint8_t)step;
+            printk("%s upload %d%%\n",
+                   objects[slot].name,
+                   step);
+        }
     }
+
 
     if (rem == 0)
     {
@@ -1087,4 +1086,71 @@ int ots_server_start(void)
     return bt_le_adv_start(BT_LE_ADV_CONN_FAST_1,
                            ad, ARRAY_SIZE(ad),
                            sd, ARRAY_SIZE(sd));
+}
+int meta_data_update(void)
+{
+    size_t sz;
+    int err;
+
+    if (get_file_size("/lfs/slot1_image.bin", &sz) < 0) {
+        return -ENOENT;
+    }
+
+    for (int i = 0; i < OBJ_POOL_SIZE; i++) {
+
+        if (!objects[i].used) {
+            continue;
+        }
+
+        if (strcmp(objects[i].name, "slot1_image") == 0) {
+
+            uint64_t old_id = objects[i].id;
+
+            recreate_in_progress = true;
+
+            err = bt_ots_obj_delete(ots_instance, old_id);
+            if (err) {
+                printk("Delete failed %d\n", err);
+                recreate_in_progress = false;
+                return err;
+            }
+
+            recreate_in_progress = false;
+
+            static struct preload_obj preload1;
+
+            memset(&preload1, 0, sizeof(preload1));
+
+            preload1.name = "slot1_image";
+            strcpy(preload1.path,
+                   "/lfs/slot1_image.bin");
+
+            preload1.size.cur = sz;
+            preload1.size.alloc = sz;
+
+            BT_OTS_OBJ_SET_PROP_READ(preload1.props);
+            BT_OTS_OBJ_SET_PROP_WRITE(preload1.props);
+            BT_OTS_OBJ_SET_PROP_PATCH(preload1.props);
+
+            object_being_created = &preload1;
+
+            struct bt_ots_obj_add_param param = {0};
+
+            param.size = sz;
+            param.type.uuid.type = BT_UUID_TYPE_16;
+            param.type.uuid_16.val =
+                BT_UUID_OTS_TYPE_UNSPECIFIED_VAL;
+
+            err = bt_ots_obj_add(ots_instance, &param);
+
+            object_being_created = NULL;
+
+            printk("slot1_image recreated size=%u err=%d\n",
+                   (uint32_t)sz, err);
+
+            return err;
+        }
+    }
+
+    return -ENOENT;
 }

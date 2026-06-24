@@ -11,6 +11,7 @@
 int ots_server_init(void);
 int ots_server_start(void);
 int ots_server_stop(void);
+int meta_data_update(void);
 int ots_delete_first_object(void);
 void reload_latest_image(void);
 void ots_set_first_object_data(const uint8_t *data, size_t size);

@@ -12,6 +12,32 @@
 #include <zephyr/logging/log.h>
 #include <pm_config.h>
 #include "ots.h"
+#include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
+
+static enum mgmt_cb_return fs_event_cb(
+        uint32_t event,
+        enum mgmt_cb_return prev_status,
+        int32_t *rc,
+        uint16_t *group,
+        bool *abort_more,
+        void *data,
+        size_t data_size)
+{
+    printk("MCUmgr event: %u\n", event);
+
+    /* Refresh OTS objects here */
+    meta_data_update();
+
+    return MGMT_CB_OK;
+}
+
+static struct mgmt_callback fs_cb = {
+    .callback = fs_event_cb,
+    .event_id = MGMT_EVT_OP_FS_MGMT_FILE_ACCESS_DONE,
+};
+
+// mcumgr hooks
+
 
 
 
@@ -66,11 +92,11 @@ int main(void)
 	LOG_INF("Start");
 	LOG_INF("Partition ID: %d", PM_LITTLEFS_STORAGE_ID);
 	LOG_INF("Size: 0x%x", PM_LITTLEFS_STORAGE_SIZE);
-
+    mgmt_callback_register(&fs_cb);
 	rc = mount_fs();
 	int err;
 
-	printk("Starting Bluetooth OTS server\n");
+	printk("Starting Bluetooth OTS server 1\n");
 
 	err = bt_enable(NULL);
 	if (err) {
