@@ -16,4 +16,6 @@ int ots_delete_first_object(void);
 void reload_latest_image(void);
 void ots_set_first_object_data(const uint8_t *data, size_t size);
 int ots_create_first_object(const uint8_t *data, size_t size);
+void ots_list_objects(void);
+
 #endif

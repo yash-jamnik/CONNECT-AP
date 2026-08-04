@@ -84,6 +84,8 @@ static int mount_fs(void)
 	return rc;
 }
 
+
+
 int main(void)
 {
 
@@ -117,6 +119,7 @@ int main(void)
 		printk("Advertising failed to start (err %d)\n", err);
 		return 0;
 	}
+	ots_list_objects();
 
 	printk("Advertising successfully started for second firmware\n");
 	return 0;
