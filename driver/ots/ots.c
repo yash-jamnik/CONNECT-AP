@@ -424,6 +424,18 @@
 static bool recreate_in_progress;
 static struct bt_ots *ots_instance;
 static bool reset_on_disconnect;
+#define MAX_OTS_CONN 5
+
+struct ots_conn_ctx
+{
+    struct bt_conn *conn;
+    uint8_t progress;
+    uint8_t progress_pct;
+    uint8_t chunk[OTS_CHUNK_SIZE];
+};
+
+static struct ots_conn_ctx conn_ctx[MAX_OTS_CONN];
+// static atomic_t conn_count;
 
 /* ------------------------------------------------------- */
 /* Advertising data                                        */
@@ -578,7 +590,7 @@ static int file_write_chunk(const char *path,
 
 static void restart_adv_handler(struct k_work *work);
 
-K_WORK_DEFINE(restart_adv_work, restart_adv_handler);
+static K_WORK_DELAYABLE_DEFINE(restart_adv_work, restart_adv_handler);
 
 static void restart_adv_handler(struct k_work *work)
 {
@@ -588,23 +600,27 @@ static void restart_adv_handler(struct k_work *work)
                               ad, ARRAY_SIZE(ad),
                               sd, ARRAY_SIZE(sd));
 
+    if (err == -EALREADY)
+    {
+        return;
+    }
+
     if (err)
     {
-        printk("Advertising restart failed: %d\n", err);
+        printk("Adv restart failed (%d), retrying in 200 ms\n", err);
+        k_work_reschedule(&restart_adv_work, K_MSEC(200));
+        return;
     }
-    else
-    {
-        printk("Advertising restarted\n");
-    }
+
+    printk("Advertising restarted\n");
 }
 
 /* ------------------------------------------------------- */
 /* Connection callbacks                                    */
 /* ------------------------------------------------------- */
-
 static void connected(struct bt_conn *conn, uint8_t err)
 {
-    ARG_UNUSED(conn);
+    char addr_str[BT_ADDR_LE_STR_LEN];
 
     if (err)
     {
@@ -613,25 +629,41 @@ static void connected(struct bt_conn *conn, uint8_t err)
         return;
     }
 
-    printk("Connected\n");
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr_str, sizeof(addr_str));
+    printk("Connected: %s\n", addr_str);
+
+    for (int i = 0; i < MAX_OTS_CONN; i++)
+    {
+        if (conn_ctx[i].conn == NULL)
+        {
+            conn_ctx[i].conn = bt_conn_ref(conn);
+            conn_ctx[i].progress = 0;
+            break;
+        }
+    }
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
-    ARG_UNUSED(conn);
-
     printk("Disconnected: %u %s\n",
            reason, bt_hci_err_to_str(reason));
-    if (reset_on_disconnect) {
-        reset_on_disconnect = false;
-        k_sleep(K_MSEC(100));
-        // printk("Resetting device due to disconnect after transfer...\n");
-        // sys_reboot(SYS_REBOOT_COLD);
+
+    for (int i = 0; i < MAX_OTS_CONN; i++)
+    {
+        if (conn_ctx[i].conn == conn)
+        {
+            bt_conn_unref(conn_ctx[i].conn);
+            memset(&conn_ctx[i], 0, sizeof(conn_ctx[i]));
+            break;
+        }
     }
 
-    k_sleep(K_MSEC(300));
+    if (reset_on_disconnect)
+    {
+        reset_on_disconnect = false;
+    }
 
-    k_work_submit(&restart_adv_work);
+    k_work_reschedule(&restart_adv_work, K_MSEC(50));
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -742,11 +774,24 @@ static void ots_obj_selected(struct bt_ots *ots,
                              uint64_t id)
 {
     ARG_UNUSED(ots);
-    ARG_UNUSED(conn);
 
     printk("Selected object %llu\n", id);
 }
+static struct ots_conn_ctx *get_ctx(struct bt_conn *conn)
+{
+    if (!conn) {
+        return NULL;
+    }
 
+    for (int i = 0; i < MAX_OTS_CONN; i++) {
+        if (conn_ctx[i].conn &&
+            bt_conn_index(conn_ctx[i].conn) == bt_conn_index(conn)) {
+            return &conn_ctx[i];
+        }
+    }
+
+    return NULL;
+}
 static ssize_t ots_obj_read(struct bt_ots *ots,
                             struct bt_conn *conn,
                             uint64_t id,
@@ -756,9 +801,14 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
 {
 
     ARG_UNUSED(ots);
-    ARG_UNUSED(conn);
+    // ARG_UNUSED(conn);
 
-    static uint8_t chunk[OTS_CHUNK_SIZE];
+    // static uint8_t chunk[OTS_CHUNK_SIZE];
+    struct ots_conn_ctx *ctx = get_ctx(conn);
+    if (ctx == NULL)
+    {
+        return -ENOENT;
+    }
 
     int slot = find_slot_by_id(id);
     int ret;
@@ -771,28 +821,31 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
     }
     // printk("READ size.cur=%u\n", objects[slot].size.cur);
     /* OTS may call with data == NULL to indicate end of read procedure */
+
     if (!data)
     {
-        if (objects[slot].progress_pct < 100U)
+        if (ctx->progress_pct < 100U)
         {
-            objects[slot].progress_pct = 100U;
+            ctx->progress_pct = 100U;
             printk("100%%\n");
         }
         printk("[+]IMAGE SENT SUCCESS\n");
         reset_on_disconnect = true;
+        // active_ots_conn = NULL;
         return 0;
     }
 
     if (offset == 0)
     {
-        objects[slot].progress_pct = 0;
+        // active_ots_conn = conn;
+        ctx->progress_pct = 0;
     }
 
-    len = MIN(len, sizeof(chunk));
+    len = MIN(len, sizeof(ctx->chunk));
 
     ret = file_read_chunk(objects[slot].path,
                           offset,
-                          chunk,
+                          ctx->chunk,
                           len);
 
     if (ret < 0)
@@ -800,7 +853,8 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
         return ret;
     }
 
-    *data = chunk;
+    // *data = chunk;
+    *data = ctx->chunk;
 
     total = objects[slot].size.cur;
     if (total == 0U)
@@ -811,13 +865,13 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
     percent = (int)(((offset + (size_t)ret) * 100U) / total);
 
     /* Print only at 20% boundaries and at 100% */
-    if (percent >= (objects[slot].progress_pct + 20) || percent == 100)
+    if (percent >= (ctx->progress_pct + 20) || percent == 100)
     {
         int step = (percent >= 100) ? 100 : (percent / 20) * 20;
 
-        if (step > objects[slot].progress_pct)
+        if (step > ctx->progress_pct)
         {
-            objects[slot].progress_pct = (uint8_t)step;
+            ctx->progress_pct = (uint8_t)step;
             printk("%d%%\n", step);
         }
     }
@@ -834,8 +888,12 @@ static ssize_t ots_obj_write(struct bt_ots *ots,
                              size_t rem)
 {
     ARG_UNUSED(ots);
-    ARG_UNUSED(conn);
+    struct ots_conn_ctx *ctx = get_ctx(conn);
 
+    if (ctx == NULL)
+    {
+        return -ENOENT;
+    }
     int slot = find_slot_by_id(id);
     int ret;
     size_t total;
@@ -848,10 +906,10 @@ static ssize_t ots_obj_write(struct bt_ots *ots,
 
     if (offset == 0)
     {
-        objects[slot].progress_pct = 0;
+        // active_ots_conn = conn;
+        ctx->progress_pct = 0;
         printk("Upload started: %s\n", objects[slot].name);
     }
-
     total = offset + len + rem;
 
     if (total == 0)
@@ -879,24 +937,24 @@ static ssize_t ots_obj_write(struct bt_ots *ots,
     }
 
     /* Print only at 20% boundaries and at 100% */
-    if (percent >= (objects[slot].progress_pct + 20) || percent == 100)
+    if (percent >= (ctx->progress_pct+ 20) || percent == 100)
     {
         int step = (percent >= 100) ? 100 : (percent / 20) * 20;
 
-        if (step > objects[slot].progress_pct)
+        if (step > ctx->progress_pct)
         {
-            objects[slot].progress_pct = (uint8_t)step;
+            ctx->progress_pct = (uint8_t)step;
             printk("%s upload %d%%\n",
                    objects[slot].name,
                    step);
         }
     }
 
-
     if (rem == 0)
     {
         printk("Image %s sent successfully\n",
                objects[slot].name);
+        // active_ots_conn = NULL;
     }
 
     return len;
@@ -932,7 +990,11 @@ static int ots_obj_cal_checksum(struct bt_ots *ots,
     ARG_UNUSED(ots);
     ARG_UNUSED(conn);
 
-    static uint8_t chunk[OTS_CHUNK_SIZE];
+    // static uint8_t chunk[OTS_CHUNK_SIZE];
+    struct ots_conn_ctx *ctx = get_ctx(conn);
+    if (ctx == NULL) {
+    return -ENOENT;
+}
 
     int slot = find_slot_by_id(id);
     int ret;
@@ -942,11 +1004,11 @@ static int ots_obj_cal_checksum(struct bt_ots *ots,
         return -ENOENT;
     }
 
-    len = MIN(len, sizeof(chunk));
+  len = MIN(len, sizeof(ctx->chunk));
 
     ret = file_read_chunk(objects[slot].path,
                           offset,
-                          chunk,
+                          ctx->chunk,
                           len);
 
     if (ret < 0)
@@ -954,7 +1016,7 @@ static int ots_obj_cal_checksum(struct bt_ots *ots,
         return ret;
     }
 
-    *data = chunk;
+    *data = ctx->chunk;
     return 0;
 }
 
@@ -1071,6 +1133,82 @@ int ots_server_init(void)
 
         object_being_created = NULL;
     }
+    if (get_file_size("/lfs/slot2_image.bin", &sz) == 0)
+    {
+        static struct preload_obj preload2;
+        memset(&preload2, 0, sizeof(preload2));
+        preload2.name = "slot2_image";
+        strcpy(preload2.path, "/lfs/slot2_image.bin");
+        preload2.size.cur = sz;
+        preload2.size.alloc = sz;
+        BT_OTS_OBJ_SET_PROP_READ(preload2.props);
+        BT_OTS_OBJ_SET_PROP_WRITE(preload2.props);
+        BT_OTS_OBJ_SET_PROP_PATCH(preload2.props);
+        object_being_created = &preload2;
+        memset(&param, 0, sizeof(param));
+        param.size = sz;
+        param.type.uuid.type = BT_UUID_TYPE_16;
+        param.type.uuid_16.val = BT_UUID_OTS_TYPE_UNSPECIFIED_VAL;
+        err = bt_ots_obj_add(ots, &param);
+        object_being_created = NULL;
+    }
+    if (get_file_size("/lfs/slot3_image.bin", &sz) == 0)
+    {
+        static struct preload_obj preload2;
+        memset(&preload2, 0, sizeof(preload2));
+        preload2.name = "slot3_image";
+        strcpy(preload2.path, "/lfs/slot3_image.bin");
+        preload2.size.cur = sz;
+        preload2.size.alloc = sz;
+        BT_OTS_OBJ_SET_PROP_READ(preload2.props);
+        BT_OTS_OBJ_SET_PROP_WRITE(preload2.props);
+        BT_OTS_OBJ_SET_PROP_PATCH(preload2.props);
+        object_being_created = &preload2;
+        memset(&param, 0, sizeof(param));
+        param.size = sz;
+        param.type.uuid.type = BT_UUID_TYPE_16;
+        param.type.uuid_16.val = BT_UUID_OTS_TYPE_UNSPECIFIED_VAL;
+        err = bt_ots_obj_add(ots, &param);
+        object_being_created = NULL;
+    }
+    if (get_file_size("/lfs/slot4_image.bin", &sz) == 0)
+    {
+        static struct preload_obj preload2;
+        memset(&preload2, 0, sizeof(preload2));
+        preload2.name = "slot4_image";
+        strcpy(preload2.path, "/lfs/slot4_image.bin");
+        preload2.size.cur = sz;
+        preload2.size.alloc = sz;
+        BT_OTS_OBJ_SET_PROP_READ(preload2.props);
+        BT_OTS_OBJ_SET_PROP_WRITE(preload2.props);
+        BT_OTS_OBJ_SET_PROP_PATCH(preload2.props);
+        object_being_created = &preload2;
+        memset(&param, 0, sizeof(param));
+        param.size = sz;
+        param.type.uuid.type = BT_UUID_TYPE_16;
+        param.type.uuid_16.val = BT_UUID_OTS_TYPE_UNSPECIFIED_VAL;
+        err = bt_ots_obj_add(ots, &param);
+        object_being_created = NULL;
+    }
+    if (get_file_size("/lfs/slot5_image.bin", &sz) == 0)
+    {
+        static struct preload_obj preload2;
+        memset(&preload2, 0, sizeof(preload2));
+        preload2.name = "slot5_image";
+        strcpy(preload2.path, "/lfs/slot5_image.bin");
+        preload2.size.cur = sz;
+        preload2.size.alloc = sz;
+        BT_OTS_OBJ_SET_PROP_READ(preload2.props);
+        BT_OTS_OBJ_SET_PROP_WRITE(preload2.props);
+        BT_OTS_OBJ_SET_PROP_PATCH(preload2.props);
+        object_being_created = &preload2;
+        memset(&param, 0, sizeof(param));
+        param.size = sz;
+        param.type.uuid.type = BT_UUID_TYPE_16;
+        param.type.uuid_16.val = BT_UUID_OTS_TYPE_UNSPECIFIED_VAL;
+        err = bt_ots_obj_add(ots, &param);
+        object_being_created = NULL;
+    }
 
     printk("OTS server ready\n");
 
@@ -1092,24 +1230,29 @@ int meta_data_update(void)
     size_t sz;
     int err;
 
-    if (get_file_size("/lfs/slot1_image.bin", &sz) < 0) {
+    if (get_file_size("/lfs/slot1_image.bin", &sz) < 0)
+    {
         return -ENOENT;
     }
 
-    for (int i = 0; i < OBJ_POOL_SIZE; i++) {
+    for (int i = 0; i < OBJ_POOL_SIZE; i++)
+    {
 
-        if (!objects[i].used) {
+        if (!objects[i].used)
+        {
             continue;
         }
 
-        if (strcmp(objects[i].name, "slot1_image") == 0) {
+        if (strcmp(objects[i].name, "slot1_image") == 0)
+        {
 
             uint64_t old_id = objects[i].id;
 
             recreate_in_progress = true;
 
             err = bt_ots_obj_delete(ots_instance, old_id);
-            if (err) {
+            if (err)
+            {
                 printk("Delete failed %d\n", err);
                 recreate_in_progress = false;
                 return err;
