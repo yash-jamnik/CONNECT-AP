@@ -13,6 +13,8 @@
 #include <pm_config.h>
 #include "ots.h"
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
+#include <zephyr/app_version.h>
+
 
 static enum mgmt_cb_return fs_event_cb(
         uint32_t event,
