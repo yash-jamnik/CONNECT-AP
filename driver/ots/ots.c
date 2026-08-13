@@ -425,13 +425,14 @@ static bool recreate_in_progress;
 static struct bt_ots *ots_instance;
 static bool reset_on_disconnect;
 #define MAX_OTS_CONN 5
-
+#define OTS_START_TIMEOUT_MS 5000
 struct ots_conn_ctx
 {
     struct bt_conn *conn;
     uint8_t progress;
     uint8_t progress_pct;
     uint8_t chunk[OTS_CHUNK_SIZE];
+     struct k_work_delayable start_timeout_work;
 };
 
 static struct ots_conn_ctx conn_ctx[MAX_OTS_CONN];
@@ -614,7 +615,27 @@ static void restart_adv_handler(struct k_work *work)
 
     printk("Advertising restarted\n");
 }
+static void ots_start_timeout_handler(struct k_work *work)
+{
+    struct k_work_delayable *dwork =
+        CONTAINER_OF(work, struct k_work_delayable, work);
 
+    struct ots_conn_ctx *ctx =
+        CONTAINER_OF(dwork, struct ots_conn_ctx, start_timeout_work);
+
+    if (ctx->conn == NULL) {
+        return;
+    }
+
+    if (ctx->transfer_started) {
+        return;
+    }
+
+    printk("[OTS] No data transfer started, disconnecting\n");
+
+    bt_conn_disconnect(ctx->conn,
+                       BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+}
 /* ------------------------------------------------------- */
 /* Connection callbacks                                    */
 /* ------------------------------------------------------- */
@@ -630,7 +651,12 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
 
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr_str, sizeof(addr_str));
-    printk("Connected: %s\n", addr_str);
+    char *space = strchr(addr_str, ' ');
+    if (space)
+    {
+        *space = '\0';
+    }
+    printk("\n[+]CONN,%s\n", addr_str);
 
     for (int i = 0; i < MAX_OTS_CONN; i++)
     {
@@ -779,13 +805,16 @@ static void ots_obj_selected(struct bt_ots *ots,
 }
 static struct ots_conn_ctx *get_ctx(struct bt_conn *conn)
 {
-    if (!conn) {
+    if (!conn)
+    {
         return NULL;
     }
 
-    for (int i = 0; i < MAX_OTS_CONN; i++) {
+    for (int i = 0; i < MAX_OTS_CONN; i++)
+    {
         if (conn_ctx[i].conn &&
-            bt_conn_index(conn_ctx[i].conn) == bt_conn_index(conn)) {
+            bt_conn_index(conn_ctx[i].conn) == bt_conn_index(conn))
+        {
             return &conn_ctx[i];
         }
     }
@@ -839,6 +868,7 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
     {
         // active_ots_conn = conn;
         ctx->progress_pct = 0;
+        printk("[+]TRANSFER_STARTED\n");
     }
 
     len = MIN(len, sizeof(ctx->chunk));
@@ -937,7 +967,7 @@ static ssize_t ots_obj_write(struct bt_ots *ots,
     }
 
     /* Print only at 20% boundaries and at 100% */
-    if (percent >= (ctx->progress_pct+ 20) || percent == 100)
+    if (percent >= (ctx->progress_pct + 20) || percent == 100)
     {
         int step = (percent >= 100) ? 100 : (percent / 20) * 20;
 
@@ -992,9 +1022,10 @@ static int ots_obj_cal_checksum(struct bt_ots *ots,
 
     // static uint8_t chunk[OTS_CHUNK_SIZE];
     struct ots_conn_ctx *ctx = get_ctx(conn);
-    if (ctx == NULL) {
-    return -ENOENT;
-}
+    if (ctx == NULL)
+    {
+        return -ENOENT;
+    }
 
     int slot = find_slot_by_id(id);
     int ret;
@@ -1004,7 +1035,7 @@ static int ots_obj_cal_checksum(struct bt_ots *ots,
         return -ENOENT;
     }
 
-  len = MIN(len, sizeof(ctx->chunk));
+    len = MIN(len, sizeof(ctx->chunk));
 
     ret = file_read_chunk(objects[slot].path,
                           offset,
