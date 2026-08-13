@@ -8,6 +8,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+int  ots_set_allowed_addr(const char *mac_str);
+void ots_force_disconnect_all(void);
+
 int ots_server_init(void);
 int ots_server_start(void);
 int ots_server_stop(void);

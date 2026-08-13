@@ -413,6 +413,11 @@
 #include <zephyr/bluetooth/services/ots.h>
 #include <zephyr/sys/reboot.h>
 
+
+
+static bt_addr_le_t allowed_addr;
+static bool          allowed_addr_set;
+
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
 
@@ -436,6 +441,45 @@ struct ots_conn_ctx
 };
 
 static struct ots_conn_ctx conn_ctx[MAX_OTS_CONN];
+int ots_set_allowed_addr(const char *mac_str)
+{
+    bt_addr_le_t addr;
+    int err;
+
+    /* Try public first, fall back to random, since UART command
+     * doesn't carry the address type explicitly. */
+    err = bt_addr_le_from_str(mac_str, "public", &addr);
+    if (err) {
+        err = bt_addr_le_from_str(mac_str, "random", &addr);
+    }
+
+    if (err) {
+        return -EINVAL;
+    }
+
+    allowed_addr = addr;
+    allowed_addr_set = true;
+
+    return 0;
+}
+
+void ots_force_disconnect_all(void)
+{
+    bool any = false;
+
+    for (int i = 0; i < MAX_OTS_CONN; i++) {
+        if (conn_ctx[i].conn) {
+            any = true;
+            printk("[+]FORCE_DISCONNECT\n");
+            bt_conn_disconnect(conn_ctx[i].conn,
+                                BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        }
+    }
+
+    if (!any) {
+        printk("[UART] No active connection to disconnect\n");
+    }
+}
 // static atomic_t conn_count;
 
 /* ------------------------------------------------------- */
@@ -626,11 +670,6 @@ static void ots_start_timeout_handler(struct k_work *work)
     if (ctx->conn == NULL) {
         return;
     }
-
-    if (ctx->transfer_started) {
-        return;
-    }
-
     printk("[OTS] No data transfer started, disconnecting\n");
 
     bt_conn_disconnect(ctx->conn,
@@ -657,6 +696,14 @@ static void connected(struct bt_conn *conn, uint8_t err)
         *space = '\0';
     }
     printk("\n[+]CONN,%s\n", addr_str);
+
+    if (allowed_addr_set &&
+        bt_addr_le_cmp(bt_conn_get_dst(conn), &allowed_addr) != 0)
+    {
+        printk("[+]REJECTED_NOT_WHITELISTED,%s\n", addr_str);
+        bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        return;
+    }
 
     for (int i = 0; i < MAX_OTS_CONN; i++)
     {

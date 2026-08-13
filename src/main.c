@@ -13,33 +13,30 @@
 #include <pm_config.h>
 #include "ots.h"
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
-
+#include "uart_cmd.h"
 static enum mgmt_cb_return fs_event_cb(
-        uint32_t event,
-        enum mgmt_cb_return prev_status,
-        int32_t *rc,
-        uint16_t *group,
-        bool *abort_more,
-        void *data,
-        size_t data_size)
+	uint32_t event,
+	enum mgmt_cb_return prev_status,
+	int32_t *rc,
+	uint16_t *group,
+	bool *abort_more,
+	void *data,
+	size_t data_size)
 {
-    printk("MCUmgr event: %u\n", event);
+	printk("MCUmgr event: %u\n", event);
 
-    /* Refresh OTS objects here */
-    meta_data_update();
+	/* Refresh OTS objects here */
+	meta_data_update();
 
-    return MGMT_CB_OK;
+	return MGMT_CB_OK;
 }
 
 static struct mgmt_callback fs_cb = {
-    .callback = fs_event_cb,
-    .event_id = MGMT_EVT_OP_FS_MGMT_FILE_ACCESS_DONE,
+	.callback = fs_event_cb,
+	.event_id = MGMT_EVT_OP_FS_MGMT_FILE_ACCESS_DONE,
 };
 
 // mcumgr hooks
-
-
-
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
@@ -59,7 +56,8 @@ static int mount_fs(void)
 	int rc;
 
 	rc = fs_mount(&littlefs_mnt);
-	if (rc == 0) {
+	if (rc == 0)
+	{
 		LOG_INF("Mounted LittleFS");
 		return 0;
 	}
@@ -67,17 +65,19 @@ static int mount_fs(void)
 	LOG_WRN("Mount failed (%d), formatting...", rc);
 
 	rc = fs_mkfs(FS_LITTLEFS,
-		     (uintptr_t)PM_LITTLEFS_STORAGE_ID,
-		     NULL, 0);
+				 (uintptr_t)PM_LITTLEFS_STORAGE_ID,
+				 NULL, 0);
 
-	if (rc < 0) {
+	if (rc < 0)
+	{
 		LOG_ERR("Format failed: %d", rc);
 		return rc;
 	}
 
 	rc = fs_mount(&littlefs_mnt);
 
-	if (rc == 0) {
+	if (rc == 0)
+	{
 		LOG_INF("Mounted after format");
 	}
 
@@ -92,14 +92,15 @@ int main(void)
 	LOG_INF("Start");
 	LOG_INF("Partition ID: %d", PM_LITTLEFS_STORAGE_ID);
 	LOG_INF("Size: 0x%x", PM_LITTLEFS_STORAGE_SIZE);
-    mgmt_callback_register(&fs_cb);
+	mgmt_callback_register(&fs_cb);
 	rc = mount_fs();
 	int err;
 
 	printk("Starting Bluetooth OTS server 1\n");
 
 	err = bt_enable(NULL);
-	if (err) {
+	if (err)
+	{
 		printk("Bluetooth init failed (err %d)\n", err);
 		return 0;
 	}
@@ -107,16 +108,19 @@ int main(void)
 	printk("Bluetooth initialized\n");
 
 	err = ots_server_init();
-	if (err) {
+	if (err)
+	{
 		printk("Failed to init OTS (err %d)\n", err);
 		return 0;
 	}
 
 	err = ots_server_start();
-	if (err) {
+	if (err)
+	{
 		printk("Advertising failed to start (err %d)\n", err);
 		return 0;
 	}
+	uart_cmd_init();
 
 	printk("Advertising successfully started for second firmware\n");
 	return 0;
