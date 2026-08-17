@@ -413,13 +413,31 @@
 #include <zephyr/bluetooth/services/ots.h>
 #include <zephyr/sys/reboot.h>
 
+static bt_addr_le_t allowed_addr_le;
 
-
-static bt_addr_le_t allowed_addr;
-static bool          allowed_addr_set;
-
+static const struct bt_le_adv_param adv_param_filtered = {
+    .id           = BT_ID_DEFAULT,
+    .options      = BT_LE_ADV_OPT_CONN | BT_LE_ADV_OPT_FILTER_CONN,
+    .interval_min = BT_GAP_ADV_FAST_INT_MIN_1,
+    .interval_max = BT_GAP_ADV_FAST_INT_MAX_1,
+    .peer         = NULL,
+};
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
+
+static const struct bt_data ad[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS,
+                  (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+    BT_DATA(BT_DATA_NAME_COMPLETE,
+            DEVICE_NAME, DEVICE_NAME_LEN),
+};
+
+static const struct bt_data sd[] = {
+    BT_DATA_BYTES(BT_DATA_UUID16_ALL,
+                  BT_UUID_16_ENCODE(BT_UUID_OTS_VAL)),
+};
+
+
 
 #define OBJ_POOL_SIZE CONFIG_BT_OTS_MAX_OBJ_CNT
 #define OBJ_MAX_NAME CONFIG_BT_OTS_OBJ_MAX_NAME_LEN
@@ -437,46 +455,66 @@ struct ots_conn_ctx
     uint8_t progress;
     uint8_t progress_pct;
     uint8_t chunk[OTS_CHUNK_SIZE];
-     struct k_work_delayable start_timeout_work;
+    struct k_work_delayable start_timeout_work;
 };
 
 static struct ots_conn_ctx conn_ctx[MAX_OTS_CONN];
 int ots_set_allowed_addr(const char *mac_str)
 {
-    bt_addr_le_t addr;
+    bt_addr_t plain_addr;
+    bt_addr_le_t addr_pub, addr_rand;
     int err;
 
-    /* Try public first, fall back to random, since UART command
-     * doesn't carry the address type explicitly. */
-    err = bt_addr_le_from_str(mac_str, "public", &addr);
-    if (err) {
-        err = bt_addr_le_from_str(mac_str, "random", &addr);
-    }
-
+    err = bt_addr_from_str(mac_str, &plain_addr);
     if (err) {
         return -EINVAL;
     }
 
-    allowed_addr = addr;
-    allowed_addr_set = true;
+    addr_pub.type  = BT_ADDR_LE_PUBLIC;
+    addr_pub.a     = plain_addr;
+
+    addr_rand.type = BT_ADDR_LE_RANDOM;
+    addr_rand.a    = plain_addr;
+
+    bt_le_adv_stop();
+    bt_le_filter_accept_list_clear();
+
+    /* Add both type variants of the same MAC bytes, so it
+     * connects regardless of whether the peer is public or random */
+    err = bt_le_filter_accept_list_add(&addr_pub);
+    if (err) {
+        printk("[UART] Failed to add public entry (%d)\n", err);
+    }
+
+    err = bt_le_filter_accept_list_add(&addr_rand);
+    if (err) {
+        printk("[UART] Failed to add random entry (%d)\n", err);
+    }
+
+    allowed_addr_le = addr_rand; /* just for bookkeeping */
+
+    bt_le_adv_start(&adv_param_filtered, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+    printk("[+]WHITELIST_SET,%s\n", mac_str);
 
     return 0;
 }
-
 void ots_force_disconnect_all(void)
 {
     bool any = false;
 
-    for (int i = 0; i < MAX_OTS_CONN; i++) {
-        if (conn_ctx[i].conn) {
+    for (int i = 0; i < MAX_OTS_CONN; i++)
+    {
+        if (conn_ctx[i].conn)
+        {
             any = true;
             printk("[+]FORCE_DISCONNECT\n");
             bt_conn_disconnect(conn_ctx[i].conn,
-                                BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+                               BT_HCI_ERR_REMOTE_USER_TERM_CONN);
         }
     }
 
-    if (!any) {
+    if (!any)
+    {
         printk("[UART] No active connection to disconnect\n");
     }
 }
@@ -486,17 +524,6 @@ void ots_force_disconnect_all(void)
 /* Advertising data                                        */
 /* ------------------------------------------------------- */
 
-static const struct bt_data ad[] = {
-    BT_DATA_BYTES(BT_DATA_FLAGS,
-                  (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-    BT_DATA(BT_DATA_NAME_COMPLETE,
-            DEVICE_NAME, DEVICE_NAME_LEN),
-};
-
-static const struct bt_data sd[] = {
-    BT_DATA_BYTES(BT_DATA_UUID16_ALL,
-                  BT_UUID_16_ENCODE(BT_UUID_OTS_VAL)),
-};
 
 /* ------------------------------------------------------- */
 /* Structures                                              */
@@ -667,7 +694,8 @@ static void ots_start_timeout_handler(struct k_work *work)
     struct ots_conn_ctx *ctx =
         CONTAINER_OF(dwork, struct ots_conn_ctx, start_timeout_work);
 
-    if (ctx->conn == NULL) {
+    if (ctx->conn == NULL)
+    {
         return;
     }
     printk("[OTS] No data transfer started, disconnecting\n");
@@ -697,14 +725,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
     printk("\n[+]CONN,%s\n", addr_str);
 
-    if (allowed_addr_set &&
-        bt_addr_le_cmp(bt_conn_get_dst(conn), &allowed_addr) != 0)
-    {
-        printk("[+]REJECTED_NOT_WHITELISTED,%s\n", addr_str);
-        bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-        return;
-    }
-
     for (int i = 0; i < MAX_OTS_CONN; i++)
     {
         if (conn_ctx[i].conn == NULL)
@@ -716,6 +736,16 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
 }
 
+void ots_reset_allowed_addr(void)
+{
+    bt_le_adv_stop();
+    bt_le_filter_accept_list_clear();
+
+    memset(&allowed_addr_le, 0, sizeof(allowed_addr_le));
+
+    bt_le_adv_start(&adv_param_filtered, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+    printk("[+]MAC_RESET,deny-all\n");
+}
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
     printk("Disconnected: %u %s\n",
@@ -735,8 +765,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     {
         reset_on_disconnect = false;
     }
-
-    k_work_reschedule(&restart_adv_work, K_MSEC(50));
+    ots_reset_allowed_addr();
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -916,6 +945,7 @@ static ssize_t ots_obj_read(struct bt_ots *ots,
         // active_ots_conn = conn;
         ctx->progress_pct = 0;
         printk("[+]TRANSFER_STARTED\n");
+        k_msleep(50);
     }
 
     len = MIN(len, sizeof(ctx->chunk));
@@ -1299,7 +1329,7 @@ int ots_server_init(void)
 
 int ots_server_start(void)
 {
-    return bt_le_adv_start(BT_LE_ADV_CONN_FAST_1,
+    return bt_le_adv_start(&adv_param_filtered,
                            ad, ARRAY_SIZE(ad),
                            sd, ARRAY_SIZE(sd));
 }
