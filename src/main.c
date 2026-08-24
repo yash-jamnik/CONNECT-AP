@@ -14,6 +14,7 @@
 #include "ots.h"
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
 #include "uart_cmd.h"
+#include <zephyr/app_version.h>
 static enum mgmt_cb_return fs_event_cb(
 	uint32_t event,
 	enum mgmt_cb_return prev_status,
@@ -88,7 +89,7 @@ int main(void)
 {
 
 	int rc;
-
+    LOG_INF( "VERSION =%s", APP_VERSION_STRING);
 	LOG_INF("Start");
 	LOG_INF("Partition ID: %d", PM_LITTLEFS_STORAGE_ID);
 	LOG_INF("Size: 0x%x", PM_LITTLEFS_STORAGE_SIZE);
